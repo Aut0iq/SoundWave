@@ -1,7 +1,16 @@
 {
   "name": "soundwave",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "Преобразование голоса и гитары в MIDI в реальном времени: распознавание высоты тона, вокальные триггеры, многодорожечная запись, автотюн и интеграция с FL Studio.",
+  "author": "Aut0iq",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aut0iq/SoundWave.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
