@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>SoundWave</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M3 16h3l3-8 4 16 4-20 4 24 4-16 3 4h3" fill="none" stroke="url(#lg)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="#8b6cff"/><stop offset="1" stop-color="#22d3b0"/></linearGradient></defs></svg>
+        <div>
+          <div class="brand-name">SoundWave</div>
+          <div class="brand-sub">голос → музыка</div>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="live">Голос → MIDI</button>
+        <button class="tab" data-tab="beats">Битбокс</button>
+        <button class="tab" data-tab="studio">Студия</button>
+        <button class="tab" data-tab="tune">Автотюн</button>
+      </nav>
+      <div class="top-right">
+        <div class="meter" title="Уровень входа"><div class="meter-fill" id="level-meter"></div></div>
+        <span class="pill" id="midi-pill">MIDI: нет</span>
+        <button class="btn primary" id="mic-btn">Включить микрофон</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <section class="panel">
+          <h3>Вход</h3>
+          <label class="field">Микрофон
+            <select id="device-select"><option value="">По умолчанию</option></select>
+          </label>
+          <div class="field">Источник
+            <div class="seg" id="source-seg">
+              <button data-value="voice">Голос</button>
+              <button data-value="guitar">Гитара</button>
+            </div>
+          </div>
+          <div class="field">Задержка
+            <div class="seg" id="latency-seg">
+              <button data-value="low">Низкая</button>
+              <button data-value="stable">Стабильная</button>
+            </div>
+            <small class="hint">«Низкая» быстрее, но хуже ловит низкие ноты (ниже соль большой октавы).</small>
+          </div>
+          <label class="field">Порог тишины <span class="val" id="gate-val"></span>
+            <input type="range" id="gate" min="-70" max="-15" step="1" />
+          </label>
+          <label class="field inline">Строй A4, Гц
+            <input type="number" id="a4" min="415" max="466" step="0.5" />
+          </label>
+        </section>
+
+        <section class="panel">
+          <h3>Тональность</h3>
+          <div class="row2">
+            <select id="key-select" aria-label="Тоника"></select>
+            <select id="scale-select" aria-label="Лад"></select>
+          </div>
+          <div class="pc-chips" id="pc-chips" title="Разрешённые ноты: нажми, чтобы включить или выключить"></div>
+          <button class="btn small" id="detect-key-btn">Определить по тому, что я спел</button>
+          <div class="hint" id="key-result"></div>
+        </section>
+
+        <section class="panel">
+          <h3>MIDI-выход</h3>
+          <button class="btn small" id="midi-connect-btn">Подключить MIDI</button>
+          <label class="field">Порт
+            <select id="midi-port"><option value="">— не выбран —</option></select>
+          </label>
+          <div class="row2">
+            <label class="field">Канал
+              <select id="midi-channel"></select>
+            </label>
+            <label class="field">Барабаны
+              <select id="drum-channel"></select>
+            </label>
+          </div>
+          <button class="btn small ghost" id="panic-btn">Сбросить все ноты</button>
+          <small class="hint" id="midi-help">Чтобы ноты шли в DAW (FL Studio, Ableton, Reaper…), установи бесплатный <b>loopMIDI</b>, создай в нём порт и выбери его здесь и во входах DAW.</small>
+        </section>
+      </aside>
+
+      <main class="main">
+        <!-- Voice -> MIDI -->
+        <section class="tab-page active" id="tab-live">
+          <div class="hero">
+            <div class="note-card">
+              <div class="note-big" id="note-big">—</div>
+              <div class="note-sub"><span id="note-latin"></span><span id="note-hz"></span></div>
+              <div class="cents">
+                <div class="cents-scale"><span>−50</span><span>0</span><span>+50</span></div>
+                <div class="cents-track"><div class="cents-zero"></div><div class="cents-needle" id="cents-needle"></div></div>
+                <div class="cents-val" id="cents-val"></div>
+              </div>
+            </div>
+            <div class="graph-card">
+              <canvas id="pitch-graph"></canvas>
+              <div class="chord-display" id="chord-display"></div>
+            </div>
+          </div>
+          <canvas id="keyboard" class="keyboard"></canvas>
+
+          <div class="cards">
+            <div class="card">
+              <h4>Звук</h4>
+              <label class="check"><input type="checkbox" id="live-sound" /> Играть инструментом в колонках</label>
+              <label class="field">Инструмент <span class="status" id="inst-status"></span>
+                <select id="live-instrument"></select>
+              </label>
+              <label class="field inline">Октава
+                <select id="octave">
+                  <option value="-2">−2</option><option value="-1">−1</option><option value="0">0</option><option value="1">+1</option><option value="2">+2</option>
+                </select>
+              </label>
+            </div>
+            <div class="card">
+              <h4>Ноты и аккорды</h4>
+              <label class="check"><input type="checkbox" id="keylock" /> Привязка к тональности</label>
+              <label class="field">Аккорд
+                <select id="chord-select"></select>
+              </label>
+              <label class="field">Расположение
+                <select id="voicing-select"></select>
+              </label>
+            </div>
+            <div class="card">
+              <h4>Pitch bend</h4>
+              <div class="seg" id="bend-seg">
+                <button data-value="off">Выкл.</button>
+                <button data-value="hold">Удержание</button>
+                <button data-value="follow">Следование</button>
+              </div>
+              <small class="hint">«Удержание» держит ноту ровно, пока ты сам не уведёшь голос в сторону. «Следование» повторяет каждое движение голоса.</small>
+              <label class="field inline">Диапазон, полутонов
+                <select id="bend-range">
+                  <option>1</option><option>2</option><option>5</option><option>7</option><option>12</option><option>24</option>
+                </select>
+              </label>
+            </div>
+            <div class="card">
+              <h4>Динамика и тембр</h4>
+              <div class="row2">
+                <select id="vel-mode">
+                  <option value="dynamic">Сила нот: по громкости</option>
+                  <option value="fixed">Сила нот: постоянная</option>
+                </select>
+                <input type="number" id="vel-fixed" min="1" max="127" title="Постоянная сила (velocity)" />
+              </div>
+              <div class="cc-row">
+                <label class="check"><input type="checkbox" id="env-cc" /> Громкость → CC</label>
+                <input type="number" id="env-cc-num" min="0" max="127" title="Номер CC" />
+                <div class="mini-meter"><div id="env-meter"></div></div>
+              </div>
+              <div class="cc-row">
+                <label class="check"><input type="checkbox" id="timbre-cc" /> Тембр (гласные) → CC</label>
+                <input type="number" id="timbre-cc-num" min="0" max="127" title="Номер CC" />
+                <div class="mini-meter"><div id="timbre-meter"></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Beatbox triggers -->
+        <section class="tab-page" id="tab-beats">
+          <div class="beats-head">
+            <label class="switch"><input type="checkbox" id="triggers-enabled" /><span></span> Триггеры включены</label>
+            <label class="field inline grow" title="Чем ниже порог, тем тише звук, на который сработает пад">Порог срабатывания <span class="val" id="trigger-db-val"></span>
+              <input type="range" id="trigger-db" min="-60" max="-10" step="1" />
+            </label>
+          </div>
+          <p class="hint" id="train-hint">Как обучить: нажми «Обучить» у пада и сделай свой звук 5–8 раз с паузами (например, «бф» для бочки, «тс» для хэта, «пш» для малого). Потом нажми «Готово». Чем больше примеров, тем точнее.</p>
+          <div class="pads" id="pads"></div>
+        </section>
+
+        <!-- Studio -->
+        <section class="tab-page" id="tab-studio">
+          <div class="transport">
+            <button class="tbtn rec" id="rec-btn" title="Запись (R)"><span class="dot"></span></button>
+            <button class="tbtn" id="play-btn" title="Играть / пауза (пробел)">▶</button>
+            <button class="tbtn" id="stop-btn" title="Стоп">■</button>
+            <button class="tbtn" id="home-btn" title="В начало (Home)">⏮</button>
+            <div class="time" id="time-display">0:00.0</div>
+            <label class="field inline">Темп <input type="number" id="bpm" min="40" max="240" /></label>
+            <label class="check"><input type="checkbox" id="metronome" /> Метроном</label>
+            <label class="check"><input type="checkbox" id="countin" /> Отсчёт такта</label>
+            <label class="field inline">Квантизация <select id="quantize"></select></label>
+            <label class="field inline" title="Сдвиг записи, чтобы она совпадала с остальными дорожками">Задержка, мс <input type="number" id="latency-ms" min="0" max="500" placeholder="авто" /></label>
+          </div>
+          <div class="roll-wrap" id="roll-wrap">
+            <canvas id="roll"></canvas>
+            <div class="roll-tools">
+              <button class="btn small ghost" id="zoom-out" title="Уменьшить (Ctrl + колесо)">−</button>
+              <button class="btn small ghost" id="zoom-in" title="Увеличить (Ctrl + колесо)">+</button>
+            </div>
+          </div>
+          <small class="hint roll-hint">Клик — выбрать ноту, перетаскивание — сдвинуть, край ноты — длина, двойной клик — новая нота, Delete — удалить, ↑/↓ — на полутон, Shift+↑/↓ — на октаву. Колесо прокручивает по высоте, Shift + колесо — по времени.</small>
+          <div class="tracks" id="tracks"></div>
+          <div class="studio-foot">
+            <button class="btn" id="export-midi">Скачать MIDI</button>
+            <a class="btn ghost drag-out" id="drag-midi" draggable="true" title="Перетащи в DAW">⇲ Перетащи MIDI в DAW</a>
+            <button class="btn" id="export-wav">Скачать WAV</button>
+            <span class="grow"></span>
+            <button class="btn ghost danger" id="clear-project">Очистить проект</button>
+          </div>
+        </section>
+
+        <!-- Autotune -->
+        <section class="tab-page" id="tab-tune">
+          <div class="tune-hero">
+            <div class="tune-box">
+              <div class="tune-label">Ты поёшь</div>
+              <div class="tune-note" id="tune-in-note">—</div>
+            </div>
+            <div class="tune-arrow">→</div>
+            <div class="tune-box accent">
+              <div class="tune-label">Звучит</div>
+              <div class="tune-note" id="tune-out-note">—</div>
+            </div>
+            <div class="tune-shift">
+              <div class="tune-label">Коррекция</div>
+              <div class="shift-track"><div class="shift-zero"></div><div class="shift-bar" id="tune-shift-bar"></div></div>
+              <div class="tune-shift-val" id="tune-shift-val"></div>
+            </div>
+          </div>
+          <div class="cards">
+            <div class="card">
+              <h4>Слушать себя</h4>
+              <label class="switch"><input type="checkbox" id="monitor" /><span></span> Автотюн в наушниках в реальном времени</label>
+              <small class="hint warn">Только в наушниках: через колонки микрофон поймает звук и начнёт свистеть.</small>
+              <label class="field">Громкость <input type="range" id="monitor-level" min="0" max="1.5" step="0.01" /></label>
+            </div>
+            <div class="card">
+              <h4>Характер</h4>
+              <label class="field">Скорость подстройки <span class="val" id="tune-speed-val"></span>
+                <input type="range" id="tune-speed" min="0" max="1" step="0.01" />
+              </label>
+              <div class="range-legend"><span>Робот (T-Pain)</span><span>Естественно</span></div>
+              <label class="field">Сила коррекции <span class="val" id="tune-amount-val"></span>
+                <input type="range" id="tune-amount" min="0" max="1" step="0.01" />
+              </label>
+              <label class="field">Смесь с оригиналом <span class="val" id="tune-mix-val"></span>
+                <input type="range" id="tune-mix" min="0" max="1" step="0.01" />
+              </label>
+            </div>
+            <div class="card">
+              <h4>Как это работает</h4>
+              <p class="hint">Ноты берутся из тональности слева: <b id="tune-key-label"></b>. Голос подтягивается к ближайшей разрешённой ноте.</p>
+              <p class="hint">Записанный в «Студии» голос можно слушать с автотюном: у дорожки выбери режим «Голос + автотюн». Оригинал записи при этом не меняется, настройки можно крутить сколько угодно.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div class="toast" id="toast"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
