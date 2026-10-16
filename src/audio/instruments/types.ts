@@ -15,7 +15,10 @@ export interface Instrument {
   gmProgram: number;
   state(): LoadState;
   load(ctx: BaseAudioContext): Promise<void>;
-  /** Builds the per-track effect chain feeding `dest`; voices connect to the returned node. */
+  /**
+   * Builds the per-track effect chain feeding `dest`; voices connect to the returned node.
+   * Always a new node owned by the caller, so disconnecting it never cuts off `dest`.
+   */
   createBus(ctx: BaseAudioContext, dest: AudioNode): AudioNode;
   /** Starts a note; with `duration` the release is scheduled automatically. */
   play(ctx: BaseAudioContext, bus: AudioNode, midi: number, velocity: number, time: number, duration?: number): Voice;

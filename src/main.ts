@@ -86,6 +86,7 @@ class App {
   private syncers: (() => void)[] = [];
   private history: { midi: number; start: number; end: number }[] = [];
   private lastFrame: LiveFrame | null = null;
+  private lastVoicedAt = 0;
   private saveTimer = 0;
   private tab = 'live';
   private padEls: HTMLElement[] = [];
@@ -470,6 +471,10 @@ class App {
       if (this.s.monitor && !this.io.running) await this.startMic();
       if (this.s.monitor) toast('Мониторинг включён. Только в наушниках!');
     });
+
+    $('live-status-btn').addEventListener('click', () => this.set({ triggersEnabled: false }));
+    // Browsers may keep audio suspended until the page is interacted with.
+    for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => void this.io.resume(), { capture: true });
 
     document.addEventListener('keydown', (e) => this.hotkey(e));
     window.addEventListener('beforeunload', () => {
@@ -980,6 +985,23 @@ class App {
     }
   }
 
+  /** One-line hint explaining why the live instrument may be silent. */
+  private refreshLiveStatus(levelDb: number): void {
+    let msg = '';
+    const triggers = this.s.triggersEnabled;
+    const inst = getInstrument(this.s.liveInstrument);
+    if (!this.io.running) msg = 'Нажми «Включить микрофон» вверху справа.';
+    else if (this.io.ctx.state !== 'running') msg = 'Браузер приостановил звук: кликни по странице.';
+    else if (triggers) msg = 'Включены битбокс-триггеры, поэтому голос → ноты на паузе.';
+    else if (performance.now() - this.lastVoicedAt > 1500 && levelDb > -75 && levelDb < this.s.gateDb + 3)
+      msg = `Тихо: вход ${Math.round(levelDb)} дБ при пороге ${this.s.gateDb} дБ. Пой ближе к микрофону или понизь «Порог тишины» слева.`;
+    else if (!this.s.liveSound) msg = 'Звук инструмента выключен: включи «Играть инструментом в колонках».';
+    else if (inst.state() === 'loading') msg = `«${inst.name}» загружается, пока играет синтезатор.`;
+    const el = $('live-status');
+    if (el.textContent !== msg) el.textContent = msg;
+    ($('live-status-btn') as HTMLButtonElement).hidden = !(this.io.running && triggers);
+  }
+
   // -------------------------------------------------------------------------
   // Animation
 
@@ -1011,6 +1033,8 @@ class App {
           $('note-hz').textContent = '';
         }
       }
+      if (p === p) this.lastVoicedAt = performance.now();
+      this.refreshLiveStatus(db);
       const active = this.performer.active;
       $('chord-display').textContent = active ? active.notes.map((m) => noteName(m)).join(' · ') : '';
       this.keyboard.draw(active?.notes ?? [], p, mask);

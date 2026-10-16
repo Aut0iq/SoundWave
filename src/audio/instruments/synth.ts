@@ -158,6 +158,13 @@ export function renderPiano(sr: number, midi: number): Float32Array {
   return normalise(out, 0.55);
 }
 
+/** A fresh input node feeding `dest`: callers may disconnect it without touching shared buses. */
+export function directBus(ctx: BaseAudioContext, dest: AudioNode): AudioNode {
+  const g = ctx.createGain();
+  g.connect(dest);
+  return g;
+}
+
 function envelopeGain(ctx: BaseAudioContext, bus: AudioNode, time: number, peak: number, attack: number): GainNode {
   const g = ctx.createGain();
   g.gain.setValueAtTime(0, time);
@@ -179,7 +186,7 @@ class BufferInstrument implements Instrument {
     readonly gmProgram: number,
     private readonly render: (sr: number, midi: number) => Float32Array,
     private readonly release: number,
-    private readonly makeBus: (ctx: BaseAudioContext, dest: AudioNode) => AudioNode = (_c, d) => d,
+    private readonly makeBus: (ctx: BaseAudioContext, dest: AudioNode) => AudioNode = directBus,
     private readonly level = 1,
   ) {}
 
@@ -280,7 +287,7 @@ class OscInstrument implements Instrument {
     readonly name: string,
     readonly gmProgram: number,
     private readonly patch: OscPatch,
-    private readonly makeBus: (ctx: BaseAudioContext, dest: AudioNode) => AudioNode = (_c, d) => d,
+    private readonly makeBus: (ctx: BaseAudioContext, dest: AudioNode) => AudioNode = directBus,
   ) {}
 
   state(): LoadState {

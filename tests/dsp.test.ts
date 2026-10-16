@@ -82,6 +82,17 @@ describe('note transcription', () => {
     });
   });
 
+  it('keeps a note whole when it swells in gradually', () => {
+    const sig = tone((t) => (t < 0.2 ? 0 : t < 1.0 ? 329.6 : t < 1.2 ? 0 : 392), 1.9);
+    for (let i = 0; i < sig.length; i++) {
+      const t = i / SR;
+      const local = t < 1.2 ? t - 0.2 : t - 1.2;
+      sig[i] *= Math.min(1, Math.max(0, local) / 0.12); // 120 ms swell, like a sung onset
+    }
+    const notes = transcribe(framesFromSignal(sig), VOICE_OPTIONS, 384 / SR);
+    expect(notes.map((n) => n.midi)).toEqual([64, 67]);
+  });
+
   it('splits re-articulated notes of the same pitch', () => {
     // Two plucks of A3 with an exponential decay each.
     const sig = tone(() => 220, 1.2);

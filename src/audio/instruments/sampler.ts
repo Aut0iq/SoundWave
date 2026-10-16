@@ -1,6 +1,7 @@
 // Realistic instruments from the FluidR3 General MIDI soundfont (MIDI.js packaging),
 // downloaded once and kept in the browser Cache Storage for offline use.
 
+import { directBus } from './synth';
 import type { Instrument, LoadState, Voice } from './types';
 
 const BASE = 'https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/';
@@ -108,8 +109,8 @@ export class SampledInstrument implements Instrument {
     return this.loading;
   }
 
-  createBus(_ctx: BaseAudioContext, dest: AudioNode): AudioNode {
-    return dest;
+  createBus(ctx: BaseAudioContext, dest: AudioNode): AudioNode {
+    return directBus(ctx, dest);
   }
 
   private nearest(midi: number): number {

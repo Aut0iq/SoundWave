@@ -145,7 +145,9 @@ export class NoteTracker {
     if (this.active) {
       const centre = median(this.active.values.map((x) => x.m));
       const age = frame.t - this.active.start;
-      if (onset && age > o.minNoteSec && Math.abs(m - centre) <= o.changeSemitones) {
+      // The onset window (90 ms) must lie entirely after the note's own attack, otherwise a
+      // gradual swell (sung onsets) would look like a re-articulation.
+      if (onset && age > o.minNoteSec + 0.1 && Math.abs(m - centre) <= o.changeSemitones) {
         this.finish(frame.t, events);
         this.begin([v], events, true);
         return events;
