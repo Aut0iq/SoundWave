@@ -1,4 +1,5 @@
-// Live MIDI output through the Web MIDI API (e.g. to a loopMIDI virtual port read by a DAW).
+// Live MIDI through the Web MIDI API: notes out to a DAW (e.g. via a loopMIDI virtual port)
+// and an optional input for messages coming back (FL Studio sync).
 
 export interface MidiPort {
   id: string;
@@ -8,8 +9,10 @@ export interface MidiPort {
 export class MidiOut {
   private access: MIDIAccess | null = null;
   private port: MIDIOutput | null = null;
+  private input: MIDIInput | null = null;
   private sounding = new Map<string, number>();
   onPortsChanged: () => void = () => {};
+  onMessage: (data: Uint8Array, timeStamp: number) => void = () => {};
 
   get supported(): boolean {
     return typeof navigator !== 'undefined' && 'requestMIDIAccess' in navigator;
@@ -25,14 +28,45 @@ export class MidiOut {
     this.access.onstatechange = () => this.onPortsChanged();
   }
 
+  get ready(): boolean {
+    return this.access !== null;
+  }
+
   ports(): MidiPort[] {
     if (!this.access) return [];
     return [...this.access.outputs.values()].map((o) => ({ id: o.id, name: o.name ?? o.id }));
   }
 
+  inputs(): MidiPort[] {
+    if (!this.access) return [];
+    return [...this.access.inputs.values()].map((i) => ({ id: i.id, name: i.name ?? i.id }));
+  }
+
+  get inputConnected(): boolean {
+    return this.input !== null;
+  }
+
+  get outputId(): string | null {
+    return this.port?.id ?? null;
+  }
+
+  get inputId(): string | null {
+    return this.input?.id ?? null;
+  }
+
   select(id: string | null): void {
     this.allNotesOff();
     this.port = id && this.access ? this.access.outputs.get(id) ?? null : null;
+  }
+
+  selectInput(id: string | null): void {
+    if (this.input) this.input.onmidimessage = null;
+    this.input = id && this.access ? this.access.inputs.get(id) ?? null : null;
+    if (this.input) {
+      this.input.onmidimessage = (e: MIDIMessageEvent) => {
+        if (e.data) this.onMessage(e.data, e.timeStamp);
+      };
+    }
   }
 
   private send(bytes: number[], timestamp?: number): void {

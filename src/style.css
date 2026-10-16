@@ -17,6 +17,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -155,6 +156,34 @@ input[type='checkbox'] { accent-color: var(--accent); width: 16px; height: 16px;
 .switch span::after { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 120ms; }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::after { left: 19px; }
+
+/* Live capture */
+.capture { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+.capture-info { display: flex; align-items: center; gap: 10px; min-width: 220px; flex: 1; }
+.capture-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+.capture-dot.on { background: var(--rec); box-shadow: 0 0 0 4px color-mix(in srgb, var(--rec) 25%, transparent); }
+.capture-title { font-weight: 700; }
+.capture-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* FL Studio */
+.fl-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.fl-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+.fl-status.half .fl-dot { background: var(--warn); }
+.fl-status.on .fl-dot { background: var(--accent2); }
+.fl-status.rec .fl-dot { background: var(--rec); }
+.fl-transport { display: flex; gap: 6px; }
+.fl-transport .btn.active { border-color: var(--rec); color: var(--rec); }
+.dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; max-width: 620px; width: calc(100% - 32px); box-shadow: 0 20px 60px #000a; }
+.dialog::backdrop { background: #05040acc; }
+.dialog h2 { margin: 0 0 6px; font-size: 20px; }
+.steps { padding-left: 20px; display: flex; flex-direction: column; gap: 14px; margin: 16px 0; }
+.steps li { padding-left: 4px; }
+.steps ul { margin: 4px 0 8px; padding-left: 18px; }
+.step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--bg2); border: 1px solid var(--line); color: var(--muted); }
+.badge.ok { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 50%, var(--line)); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.dialog-foot { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Beatbox */
 .beats-head { display: flex; align-items: center; gap: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }

@@ -184,7 +184,14 @@ export class Performer {
   frame(f: LiveFrame): void {
     const s = this.s;
     const events = this.tracker.push(f);
-    for (const e of events) {
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i];
+      const next = events[i + 1];
+      // The voice wobbled but still lands on the same (key-locked) note: keep it sounding.
+      if (e.type === 'off' && next?.type === 'on' && next.legato && this.current && this.rootFor(next.raw) === this.current.root) {
+        i++;
+        continue;
+      }
       if (e.type === 'off') this.release(e.note.end, e.discarded);
       else this.start(e.raw, e.velocity, e.t);
     }
@@ -227,11 +234,16 @@ export class Performer {
     }
   }
 
+  private rootFor(raw: number): number {
+    const s = this.s;
+    return (s.keyLock ? snapToScale(raw, currentMask(s)) : Math.round(raw)) + s.octave * 12;
+  }
+
   private start(raw: number, trackerVelocity: number, t: number): void {
     const s = this.s;
     this.release(t);
     const mask = currentMask(s);
-    const root = (s.keyLock ? snapToScale(raw, mask) : Math.round(raw)) + s.octave * 12;
+    const root = this.rootFor(raw);
     const notes = buildChord(root, s.chord, s.voicing, mask);
     const velocity = s.velocityMode === 'fixed' ? s.fixedVelocity : trackerVelocity;
     const voices: Voice[] = [];

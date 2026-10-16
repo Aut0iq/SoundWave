@@ -37,6 +37,16 @@ interface Estimate {
 }
 
 const MIN_FREQ = 70;
+/** Keep correcting through breathy dropouts shorter than this (seconds). */
+const HOLD_SEC = 0.12;
+/** A new note must be clearly better than the current one by this much (semitones)... */
+const HYSTERESIS = 0.3;
+/** ...for at least this long (seconds) before the target switches. */
+const PERSIST_SEC = 0.03;
+/** Window of the vibrato-proof pitch centre (seconds). */
+const CENTRE_SEC = 0.15;
+/** Larger moves than this switch the target immediately (a real melodic jump). */
+const JUMP = 1.2;
 const RING = 1 << 15;
 const MASK = RING - 1;
 
@@ -57,6 +67,11 @@ export class AutotuneEngine {
   private readonly history: Estimate[] = [];
   private shift = 0;
   private target = NaN;
+  private pending = NaN;
+  private pendingSince = 0;
+  private lastVoicedPos = -Infinity;
+  private lastPeriod = 0;
+  private wasVoiced = false;
   private wet = 1;
   /** Latest analysis, for UI meters. */
   status: AutotuneStatus = { freq: 0, target: 0, shift: 0 };
@@ -93,7 +108,9 @@ export class AutotuneEngine {
     this.inPos += len;
 
     this.tracker.push(input, (f) => {
-      const voiced = f.freq > 0 && f.clarity > 0.8 && f.rms > 0.004;
+      // Hysteresis on voicing: breathy frames inside a note keep it voiced.
+      const voiced = f.freq > 0 && f.rms > 0.004 && (f.clarity > 0.78 || (this.wasVoiced && f.clarity > 0.55));
+      this.wasVoiced = voiced;
       this.history.push({
         pos: f.pos,
         period: voiced ? this.sampleRate / f.freq : 0,
@@ -126,15 +143,69 @@ export class AutotuneEngine {
     this.outPos += len;
   }
 
-  private estimateAt(pos: number): Estimate | null {
+  /** Index of the history estimate closest to `pos`, or -1. */
+  private indexAt(pos: number): number {
     const h = this.history;
-    if (!h.length) return null;
-    let best = h[h.length - 1];
+    if (!h.length) return -1;
+    let best = h.length - 1;
     for (let i = h.length - 1; i >= 0; i--) {
-      if (Math.abs(h[i].pos - pos) < Math.abs(best.pos - pos)) best = h[i];
+      if (Math.abs(h[i].pos - pos) < Math.abs(h[best].pos - pos)) best = i;
       if (h[i].pos < pos) break;
     }
     return best;
+  }
+
+  /** Median pitch of the voiced estimates around index i (suppresses jitter and glitches). */
+  private smoothedMidi(i: number): number {
+    const vals: number[] = [];
+    for (let k = Math.max(0, i - 2); k <= Math.min(this.history.length - 1, i + 2); k++) {
+      const m = this.history[k].midi;
+      if (m === m) vals.push(m);
+    }
+    if (!vals.length) return NaN;
+    vals.sort((a, b) => a - b);
+    return vals[vals.length >> 1];
+  }
+
+  /** Median pitch over the last ~150 ms: vibrato is symmetric, so this sits on the sung note. */
+  private centreAt(pos: number): number {
+    const from = pos - CENTRE_SEC * this.sampleRate;
+    const vals: number[] = [];
+    for (let k = this.history.length - 1; k >= 0; k--) {
+      const h = this.history[k];
+      if (h.pos > pos + 0.01 * this.sampleRate) continue;
+      if (h.pos < from) break;
+      if (h.midi === h.midi) vals.push(h.midi);
+    }
+    if (!vals.length) return NaN;
+    vals.sort((a, b) => a - b);
+    return vals[vals.length >> 1];
+  }
+
+  /** Picks the note to tune to, with hysteresis so vibrato and drift don't flip it. */
+  private chooseTarget(fast: number, s: number): number {
+    const p = this.params;
+    let target = this.target;
+    if (!(target === target) || Math.abs(fast - target) > JUMP) {
+      target = snapToScale(fast, p.mask);
+      this.pending = NaN;
+    } else {
+      const centre = this.centreAt(s);
+      const cand = centre === centre ? snapToScale(centre, p.mask) : target;
+      if (cand !== target && Math.abs(centre - cand) + HYSTERESIS < Math.abs(centre - target)) {
+        if (this.pending !== cand) {
+          this.pending = cand;
+          this.pendingSince = s;
+        } else if (s - this.pendingSince >= PERSIST_SEC * this.sampleRate) {
+          target = cand;
+          this.pending = NaN;
+        }
+      } else {
+        this.pending = NaN;
+      }
+    }
+    this.target = target;
+    return target;
   }
 
   private synthesize(): void {
@@ -142,30 +213,34 @@ export class AutotuneEngine {
     const p = this.params;
     while (this.nextSynth < limit) {
       const s = this.nextSynth;
-      const est = this.estimateAt(s);
+      const i = this.indexAt(s);
+      const est = i >= 0 ? this.history[i] : null;
       let period: number;
       let ratio = 1;
       if (est && est.period > 0 && est.period <= this.maxPeriod) {
         period = est.period;
-        let target = this.target;
-        const cand = snapToScale(est.midi, p.mask);
-        if (!(target === target) || Math.abs(est.midi - target) > 1.5) {
-          target = cand;
-        } else if (cand !== target && Math.abs(est.midi - cand) + 0.15 < Math.abs(est.midi - target)) {
-          target = cand;
-        }
-        this.target = target;
-        const desired = (target - est.midi) * p.amount;
         const hopSec = period / this.sampleRate;
+        const fast = this.smoothedMidi(i);
+        const target = this.chooseTarget(fast, s);
+        // Correct the instantaneous pitch so jitter and vibrato are flattened at fast speeds.
+        const desired = (target - est.midi) * p.amount;
         const tau = p.speed * p.speed * 0.4;
         const alpha = tau < 1e-4 ? 1 : 1 - Math.exp(-hopSec / tau);
         this.shift += (desired - this.shift) * alpha;
         ratio = Math.pow(2, this.shift / 12);
+        this.lastVoicedPos = s;
+        this.lastPeriod = period;
         this.status = { freq: this.sampleRate / period, target, shift: this.shift };
+      } else if (this.lastPeriod > 0 && s - this.lastVoicedPos < HOLD_SEC * this.sampleRate) {
+        // Short dropout inside a note: hold the last correction instead of snapping back.
+        period = this.lastPeriod;
+        ratio = Math.pow(2, this.shift / 12);
       } else {
         period = this.unvoicedPeriod;
         this.shift = 0;
         this.target = NaN;
+        this.pending = NaN;
+        this.lastPeriod = 0;
         this.status = { freq: 0, target: 0, shift: 0 };
       }
 

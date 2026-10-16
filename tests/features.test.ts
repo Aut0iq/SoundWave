@@ -141,3 +141,57 @@ describe('beatbox triggers', () => {
     expect(found).toEqual([...order]);
   });
 });
+
+describe('FL Studio link', () => {
+  it('parses tempo and transport reports from the FL script', async () => {
+    const { FlSync, FL_CC } = await import('../src/fl/flLink');
+    const fl = new FlSync();
+    const changes: string[] = [];
+    fl.onChange = (c) => changes.push(Object.keys(c).join(','));
+    const cc = (n: number, v: number) => fl.handle(new Uint8Array([0xbf, n, v]), 1);
+    cc(FL_CC.tempoMsb, 1405 >> 7);
+    cc(FL_CC.tempoLsb, 1405 & 127);
+    cc(FL_CC.playing, 127);
+    cc(FL_CC.recording, 127);
+    expect(fl.tempo).toBeCloseTo(140.5);
+    expect(fl.playing && fl.recording).toBe(true);
+    expect(changes).toEqual(['tempo', 'playing', 'recording']);
+    expect(fl.state(3).age).toBeCloseTo(2);
+    // Notes and other channels (SoundWave's own echo on a shared port) are ignored.
+    fl.handle(new Uint8Array([0x90, 60, 100]), 5);
+    fl.handle(new Uint8Array([0xbf, FL_CC.record, 127]), 5);
+    expect(fl.state(5).age).toBeCloseTo(4);
+  });
+
+  it('derives tempo from MIDI clock', async () => {
+    const { FlSync } = await import('../src/fl/flLink');
+    const fl = new FlSync();
+    const tick = 60 / 128 / 24;
+    for (let i = 0; i < 48; i++) fl.handle(new Uint8Array([0xf8]), i * tick);
+    expect(fl.tempo).toBeCloseTo(128, 0);
+    fl.handle(new Uint8Array([0xfa]), 2);
+    expect(fl.playing).toBe(true);
+  });
+});
+
+describe('live capture', () => {
+  it('keeps a take relative to its first note and closes the sounding note', async () => {
+    const { NoteCapture } = await import('../src/state/capture');
+    const cap = new NoteCapture();
+    cap.noteOn([60], 60, 60.1, 90, 10);
+    cap.noteOff(10.5, false);
+    cap.noteOn([62], 62, 62, 90, 10.6);
+    cap.noteOff(10.65, true); // too short: discarded
+    cap.noteOn([64, 67], 64, 64, 80, 11);
+    const take = cap.take(11.4);
+    expect(take.map((n) => [n.midi, +n.start.toFixed(2), +n.end.toFixed(2)])).toEqual([
+      [60, 0, 0.5],
+      [64, 1, 1.4],
+      [67, 1, 1.4],
+    ]);
+    cap.clear(20);
+    cap.noteOn([65], 65, 65, 90, 21);
+    cap.noteOff(21.5, false);
+    expect(cap.take(22)[0].start).toBeCloseTo(1); // anchored to the moment FL started recording
+  });
+});

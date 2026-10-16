@@ -15,6 +15,7 @@ export interface PadConfig {
 }
 
 export interface Settings {
+  version: number;
   deviceId: string;
   source: SourceKind;
   latency: LatencyMode;
@@ -41,8 +42,12 @@ export interface Settings {
   timbreCCNum: number;
 
   midiPort: string;
+  /** MIDI input carrying FL Studio's reports back (often the same loopMIDI port). */
+  midiInPort: string;
   midiChannel: number;
   drumChannel: number;
+  flTempo: boolean;
+  flNewTake: boolean;
 
   triggersEnabled: boolean;
   triggerDb: number;
@@ -74,6 +79,7 @@ export const DEFAULT_PADS: PadConfig[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
+  version: 2,
   deviceId: '',
   source: 'voice',
   latency: 'stable',
@@ -99,14 +105,17 @@ export const DEFAULT_SETTINGS: Settings = {
   timbreCCNum: 74,
 
   midiPort: '',
+  midiInPort: '',
   midiChannel: 1,
   drumChannel: 10,
+  flTempo: true,
+  flNewTake: true,
 
   triggersEnabled: false,
   triggerDb: -36,
   pads: DEFAULT_PADS,
 
-  tuneSpeed: 0.1,
+  tuneSpeed: 0.3,
   tuneAmount: 1,
   tuneMix: 1,
   monitor: false,
@@ -125,8 +134,14 @@ export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } as Settings;
+      const saved = JSON.parse(raw) as Partial<Settings>;
+      const s = { ...DEFAULT_SETTINGS, ...saved } as Settings;
       if (!Array.isArray(s.pads) || s.pads.length !== DEFAULT_PADS.length) s.pads = DEFAULT_PADS;
+      if (!((saved.version ?? 1) >= 2)) {
+        // v1 shipped a very fast (robotic) default retune speed that makes held notes warble.
+        if (s.tuneSpeed === 0.1) s.tuneSpeed = DEFAULT_SETTINGS.tuneSpeed;
+        s.version = 2;
+      }
       return s;
     }
   } catch {

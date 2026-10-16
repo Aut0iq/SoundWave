@@ -24,6 +24,8 @@ import {
   type Track,
 } from './state/project';
 import { loadProject, saveProject } from './state/storage';
+import { NoteCapture } from './state/capture';
+import { bridge, FL_CC, FL_CHANNEL, FlSync } from './fl/flLink';
 import { Keyboard } from './ui/keyboard';
 import { PitchGraph } from './ui/pitchGraph';
 import { PianoRoll } from './ui/pianoRoll';
@@ -90,6 +92,9 @@ class App {
   private saveTimer = 0;
   private tab = 'live';
   private padEls: HTMLElement[] = [];
+  private capture = new NoteCapture();
+  private fl = new FlSync();
+  private uiTick = 0;
 
   constructor() {
     this.listener = new Listener(this.io.sampleRate, this.s);
@@ -122,6 +127,7 @@ class App {
 
     this.wireAudio();
     this.buildControls();
+    if (this.s.midiPort || this.s.midiInPort) void this.connectMidi(true);
     this.buildPads();
     this.applySettings();
     this.renderTracks();
@@ -147,13 +153,17 @@ class App {
     });
     this.performer.onNoteOn = (n) => {
       this.graph.noteOn(n.notes, n.t);
-      if (!this.s.triggersEnabled) this.recorder.noteOn(n.notes, n.root, n.raw, n.velocity, n.t);
+      if (!this.s.triggersEnabled) {
+        this.recorder.noteOn(n.notes, n.root, n.raw, n.velocity, n.t);
+        this.capture.noteOn(n.notes, n.root, n.raw, n.velocity, n.t);
+      }
       this.history.push({ midi: n.root, start: n.t, end: n.t });
       if (this.history.length > 400) this.history.shift();
     };
     this.performer.onNoteOff = (_n, end, discarded) => {
       this.graph.noteOff(end);
       this.recorder.noteOff(end, discarded);
+      this.capture.noteOff(end, discarded);
       const last = this.history[this.history.length - 1];
       if (last) last.end = end;
     };
@@ -167,6 +177,8 @@ class App {
     };
     this.triggers.onTrained = () => this.refreshPads();
     this.midi.onPortsChanged = () => this.refreshMidiPorts();
+    this.midi.onMessage = (data, ts) => this.fl.handle(data, ts / 1000);
+    this.fl.onChange = (c) => this.flChanged(c);
   }
 
   autotuneParams(): Partial<AutotuneParams> {
@@ -380,7 +392,78 @@ class App {
       },
       (el) => (el.value = this.midi.connected ? this.s.midiPort : ''),
     );
+    this.bind<HTMLSelectElement>(
+      'midi-in-port',
+      (el) => {
+        this.midi.selectInput(el.value || null);
+        this.flHello();
+        return { midiInPort: el.value };
+      },
+      (el) => (el.value = this.midi.inputConnected ? this.s.midiInPort : ''),
+    );
     $('midi-connect-btn').addEventListener('click', () => void this.connectMidi());
+
+    // FL Studio.
+    this.bindCheck('fl-tempo', 'flTempo');
+    this.bindCheck('fl-newtake', 'flNewTake');
+    $('fl-rec').addEventListener('click', () => void this.flCommand(FL_CC.record));
+    $('fl-play').addEventListener('click', () => void this.flCommand(FL_CC.play));
+    $('fl-stop').addEventListener('click', () => void this.flCommand(FL_CC.stop));
+    $('fl-setup-btn').addEventListener('click', () => void this.openFlSetup());
+    $('fl-dialog-close').addEventListener('click', () => ($('fl-dialog') as HTMLDialogElement).close());
+    $('fl-recheck').addEventListener('click', () => {
+      this.flHello();
+      setTimeout(() => void this.refreshFlSetup(), 800);
+    });
+    const step = (id: string, fn: () => Promise<unknown>) =>
+      $(id).addEventListener('click', async () => {
+        try {
+          await fn();
+        } catch (err) {
+          toast((err as Error).message, true);
+        }
+        setTimeout(() => void this.refreshFlSetup(), 1200);
+      });
+    step('do-loop', async () => {
+      if (this.bridgeLoopMissing) {
+        window.open('https://www.tobias-erichsen.de/software/loopmidi.html', '_blank', 'noopener');
+        return;
+      }
+      await bridge.startLoopMidi();
+      toast('loopMIDI запущен');
+    });
+    step('do-script', async () => {
+      const r = await bridge.installScript();
+      toast(`Скрипт установлен: ${r.path}`);
+    });
+    step('do-midi', () => this.autoConnectFl());
+    step('do-fl', async () => {
+      await bridge.openFl();
+      toast('FL Studio запускается…');
+    });
+    window.setInterval(() => this.flHello(), 4000);
+
+    // Live capture.
+    $('cap-fl').addEventListener('click', () => void this.saveTakeToFl());
+    $('cap-studio').addEventListener('click', () => this.takeToStudio());
+    $('cap-midi').addEventListener('click', () => {
+      const t = this.takeMidi();
+      if (t) download(new Blob([t.bytes as Uint8Array<ArrayBuffer>], { type: 'audio/midi' }), `${this.takeName()}.mid`);
+    });
+    $('cap-drag').addEventListener('dragstart', (e) => {
+      const t = this.takeMidi(false);
+      if (!t || !e.dataTransfer) return e.preventDefault();
+      let bin = '';
+      for (const b of t.bytes) bin += String.fromCharCode(b);
+      const url = `data:audio/midi;base64,${btoa(bin)}`;
+      e.dataTransfer.setData('DownloadURL', `audio/midi:${this.takeName()}.mid:${url}`);
+      e.dataTransfer.setData('text/uri-list', url);
+    });
+    $('cap-drag').addEventListener('click', (e) => e.preventDefault());
+    $('cap-clear').addEventListener('click', () => {
+      this.capture.clear();
+      toast('Новый дубль');
+    });
     $('panic-btn').addEventListener('click', () => {
       this.performer.allOff();
       this.midi.allNotesOff();
@@ -394,6 +477,9 @@ class App {
     this.syncers.push(() => this.refreshInstrumentStatus());
     this.bind<HTMLSelectElement>('octave', (el) => ({ octave: Number(el.value) }), (el) => (el.value = String(this.s.octave)));
     this.bindCheck('keylock', 'keyLock');
+    this.syncers.push(() => {
+      $('keylock-hint').hidden = !(this.s.keyLock && this.s.customMask === null && this.s.scaleId === 'chromatic');
+    });
     this.fillSelect($('chord-select') as HTMLSelectElement, CHORD_TYPES.map((c) => ({ value: c.id, label: c.name })));
     this.bind<HTMLSelectElement>('chord-select', (el) => ({ chord: el.value }), (el) => (el.value = this.s.chord));
     this.fillSelect($('voicing-select') as HTMLSelectElement, VOICINGS.map((v) => ({ value: v.id, label: v.name })));
@@ -515,34 +601,217 @@ class App {
     }
   }
 
-  private async connectMidi(): Promise<void> {
+  private async connectMidi(silent = false): Promise<boolean> {
     if (!this.midi.supported) {
-      toast('Этот браузер не умеет работать с MIDI. Открой SoundWave в Chrome или Edge.', true);
-      return;
+      if (!silent) toast('Этот браузер не умеет работать с MIDI. Открой SoundWave в Chrome или Edge.', true);
+      return false;
     }
     try {
       await this.midi.init();
     } catch {
-      toast('Доступ к MIDI запрещён. Разреши его в адресной строке браузера.', true);
-      return;
+      if (!silent) toast('Доступ к MIDI запрещён. Разреши его в адресной строке браузера.', true);
+      return false;
     }
     this.refreshMidiPorts();
     const ports = this.midi.ports();
-    if (!ports.length) toast('MIDI-портов нет. Установи loopMIDI и создай в нём порт.', true);
-    else toast(`Найдено MIDI-портов: ${ports.length}`);
+    if (!silent) {
+      if (!ports.length) toast('MIDI-портов нет. Запусти loopMIDI и создай в нём порт.', true);
+      else toast(`Найдено MIDI-портов: ${ports.length}`);
+    }
+    return true;
   }
 
   private refreshMidiPorts(): void {
     const sel = $('midi-port') as HTMLSelectElement;
     const ports = this.midi.ports();
     this.fillSelect(sel, [{ value: '', label: ports.length ? '— не выбран —' : '— портов нет —' }, ...ports.map((p) => ({ value: p.id, label: p.name }))]);
-    if (this.s.midiPort && ports.some((p) => p.id === this.s.midiPort)) {
+    // Re-select only on a real change: port events fire whenever another app opens the port.
+    if (this.s.midiPort && ports.some((p) => p.id === this.s.midiPort) && this.midi.outputId !== this.s.midiPort) {
       this.midi.select(this.s.midiPort);
       if (this.s.bendMode !== 'off') this.midi.bendRange(this.s.midiChannel, this.s.bendRange);
     }
     sel.value = this.midi.connected ? this.s.midiPort : '';
+
+    const insel = $('midi-in-port') as HTMLSelectElement;
+    const inputs = this.midi.inputs();
+    this.fillSelect(insel, [{ value: '', label: inputs.length ? '— не выбран —' : '— портов нет —' }, ...inputs.map((p) => ({ value: p.id, label: p.name }))]);
+    if (this.s.midiInPort && inputs.some((p) => p.id === this.s.midiInPort) && this.midi.inputId !== this.s.midiInPort) {
+      this.midi.selectInput(this.s.midiInPort);
+      this.flHello();
+    }
+    insel.value = this.midi.inputConnected ? this.s.midiInPort : '';
     $('midi-connect-btn').textContent = 'Обновить список портов';
     this.refreshMidiPill();
+  }
+
+  // -------------------------------------------------------------------------
+  // FL Studio
+
+  private bridgeLoopMissing = false;
+
+  private flHello(): void {
+    if (this.midi.connected) this.midi.cc(FL_CHANNEL, FL_CC.hello, 127);
+  }
+
+  private flOnline(): boolean {
+    return this.fl.state(performance.now() / 1000).age < 9;
+  }
+
+  /** Points MIDI out and in at the loopMIDI port, starting loopMIDI if it isn't running. */
+  private async autoConnectFl(): Promise<void> {
+    if (!(await this.connectMidi(true))) throw new Error('Нет доступа к MIDI: разреши его в адресной строке браузера (Chrome или Edge).');
+    const findOut = () => this.midi.ports().find((p) => /loopmidi/i.test(p.name));
+    if (!findOut()) {
+      try {
+        await bridge.startLoopMidi();
+        for (let i = 0; i < 20 && !findOut(); i++) await new Promise((r) => setTimeout(r, 250));
+      } catch {
+        // No bridge or loopMIDI not installed: reported below.
+      }
+    }
+    const out = findOut();
+    if (!out) throw new Error('Порт loopMIDI не найден: запусти loopMIDI и создай в нём порт.');
+    const inp = this.midi.inputs().find((p) => p.name === out.name) ?? this.midi.inputs().find((p) => /loopmidi/i.test(p.name));
+    this.set({ midiPort: out.id, midiInPort: inp?.id ?? '' });
+    this.refreshMidiPorts();
+    this.flHello();
+    toast(`MIDI подключён к «${out.name}»`);
+  }
+
+  private async flCommand(cc: number): Promise<void> {
+    if (!this.midi.connected) {
+      try {
+        await this.autoConnectFl();
+      } catch {
+        void this.openFlSetup();
+        return;
+      }
+    }
+    this.midi.cc(FL_CHANNEL, cc, 127);
+    if (!this.flOnline()) toast('Команда отправлена, но FL пока не отвечает. Нажми «Настроить связь с FL Studio».');
+  }
+
+  private flChanged(c: { tempo?: boolean; playing?: boolean; recording?: boolean }): void {
+    const tempo = Math.round(this.fl.tempo * 10) / 10;
+    if (c.tempo && this.s.flTempo && tempo >= 40 && tempo <= 240 && tempo !== this.s.bpm) this.set({ bpm: tempo });
+    if (c.recording && this.fl.recording && this.s.flNewTake) {
+      this.capture.clear(this.lastFrame?.t ?? this.io.ctx.currentTime);
+      toast('FL Studio начал запись: начат новый дубль');
+    }
+    this.refreshFl();
+  }
+
+  private refreshFl(): void {
+    const st = this.fl.state(performance.now() / 1000);
+    let cls = '';
+    let msg = 'Не подключено';
+    if (st.age < 9) {
+      cls = st.recording ? 'rec' : 'on';
+      const parts = ['FL Studio на связи'];
+      if (st.tempo) parts.push(`${Math.round(st.tempo * 10) / 10} BPM`);
+      if (st.recording) parts.push('● запись');
+      else if (st.playing) parts.push('▶ играет');
+      msg = parts.join(' · ');
+    } else if (this.midi.connected) {
+      cls = 'half';
+      msg = 'Ноты идут в MIDI-порт, но FL не отвечает';
+    }
+    $('fl-status').className = `fl-status ${cls}`;
+    $('fl-status-text').textContent = msg;
+    $('fl-rec').classList.toggle('active', st.age < 9 && st.recording);
+  }
+
+  private async openFlSetup(): Promise<void> {
+    const dlg = $('fl-dialog') as HTMLDialogElement;
+    if (!dlg.open) dlg.showModal();
+    this.flHello();
+    await this.refreshFlSetup();
+  }
+
+  private async refreshFlSetup(): Promise<void> {
+    const badge = (id: string, ok: boolean, text: string) => {
+      const el = $(id);
+      el.textContent = text;
+      el.className = `badge ${ok ? 'ok' : 'warn'}`;
+    };
+    let b: Awaited<ReturnType<typeof bridge.status>> | null = null;
+    try {
+      b = await bridge.status();
+    } catch {
+      b = null;
+    }
+    const loopBtn = $('do-loop') as HTMLButtonElement;
+    if (!b) {
+      badge('st-loop', false, 'неизвестно');
+      badge('st-script', false, 'неизвестно');
+      loopBtn.disabled = true;
+      ($('do-script') as HTMLButtonElement).disabled = true;
+      ($('do-fl') as HTMLButtonElement).disabled = true;
+      toast('Помощник недоступен: запусти SoundWave через start.bat (npm run dev).', true);
+    } else {
+      this.bridgeLoopMissing = !b.loopMidiInstalled;
+      badge('st-loop', b.loopMidiRunning, !b.loopMidiInstalled ? 'не установлен' : b.loopMidiRunning ? 'запущен' : 'не запущен');
+      loopBtn.textContent = b.loopMidiInstalled ? 'Запустить loopMIDI' : 'Скачать loopMIDI';
+      loopBtn.disabled = b.loopMidiRunning;
+      badge('st-script', b.script === 'installed', b.script === 'installed' ? 'установлен' : b.script === 'outdated' ? 'есть обновление' : 'не установлен');
+      ($('do-script') as HTMLButtonElement).disabled = false;
+      ($('do-script') as HTMLButtonElement).textContent = b.script === 'installed' ? 'Переустановить скрипт' : 'Установить скрипт';
+      ($('do-fl') as HTMLButtonElement).disabled = b.flRunning || !b.flInstalled;
+    }
+    const outName = this.midi.ports().find((p) => p.id === this.midi.outputId)?.name ?? '';
+    badge('st-midi', /loopmidi/i.test(outName) && this.midi.inputConnected, /loopmidi/i.test(outName) ? (this.midi.inputConnected ? 'подключено' : 'нет входа') : 'не подключено');
+    const online = this.flOnline();
+    badge('st-fl', online, online ? 'FL на связи' : b?.flRunning ? 'FL открыт, ответа нет' : 'FL не запущен');
+    this.refreshFl();
+  }
+
+  // -------------------------------------------------------------------------
+  // Live capture
+
+  private takeName(): string {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `SoundWave ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+  }
+
+  private takeMidi(warn = true): { bytes: Uint8Array; count: number } | null {
+    const now = this.lastFrame?.t ?? this.io.ctx.currentTime;
+    const notes = quantizeNotes(this.capture.take(now), this.project.bpm, this.s.quantize);
+    if (!notes.length) {
+      if (warn) toast('Дубль пуст: включи микрофон и спой что-нибудь.', true);
+      return null;
+    }
+    const program = getInstrument(this.s.liveInstrument).gmProgram;
+    return { bytes: writeMidiFile([{ name: 'SoundWave', channel: 1, program, notes }], this.project.bpm), count: notes.length };
+  }
+
+  private async saveTakeToFl(): Promise<void> {
+    const t = this.takeMidi();
+    if (!t) return;
+    const name = this.takeName();
+    try {
+      await bridge.saveMidi(name, t.bytes);
+      toast(`Сохранено в FL Studio (${t.count} нот): браузер FL → Recorded → SoundWave → ${name}.mid`);
+    } catch {
+      download(new Blob([t.bytes as Uint8Array<ArrayBuffer>], { type: 'audio/midi' }), `${name}.mid`);
+      toast('Помощник недоступен, поэтому файл скачан. Запусти SoundWave через start.bat, чтобы сохранять прямо в FL.', true);
+    }
+  }
+
+  private takeToStudio(): void {
+    const now = this.lastFrame?.t ?? this.io.ctx.currentTime;
+    const notes = quantizeNotes(this.capture.take(now), this.project.bpm, this.s.quantize);
+    if (!notes.length) {
+      toast('Дубль пуст: включи микрофон и спой что-нибудь.', true);
+      return;
+    }
+    const tr = newTrack(this.project, { name: `Голос → MIDI ${this.project.tracks.length + 1}`, instrumentId: this.s.liveInstrument, notes });
+    this.project.tracks.push(tr);
+    this.selectedId = tr.id;
+    this.renderTracks();
+    this.scheduleSave();
+    this.roll.reveal(tr.notes);
+    toast(`Добавлено в «Студию»: «${tr.name}», нот: ${notes.length}`);
   }
 
   private refreshMidiPill(): void {
@@ -985,6 +1254,26 @@ class App {
     }
   }
 
+  private displayPitch = NaN;
+  private displayNote = 0;
+  private displayHeldAt = 0;
+
+  /**
+   * Calm tuner readout: light smoothing, a note name that only changes when the voice is
+   * clearly on another note, and a short hold over breathy dropouts.
+   */
+  private smoothDisplayPitch(p: number): number {
+    const now = performance.now();
+    if (p === p) {
+      this.displayPitch = this.displayPitch === this.displayPitch && Math.abs(p - this.displayPitch) < 1.5 ? this.displayPitch + (p - this.displayPitch) * 0.3 : p;
+      this.displayHeldAt = now;
+      if (Math.abs(this.displayPitch - this.displayNote) > 0.7) this.displayNote = Math.round(this.displayPitch);
+    } else if (now - this.displayHeldAt > 250) {
+      this.displayPitch = NaN;
+    }
+    return this.displayPitch;
+  }
+
   /** One-line hint explaining why the live instrument may be silent. */
   private refreshLiveStatus(levelDb: number): void {
     let msg = '';
@@ -1007,17 +1296,27 @@ class App {
 
   private frame(): void {
     requestAnimationFrame(() => this.frame());
+    const tickNow = performance.now();
+    if (tickNow - this.uiTick > 300) {
+      this.uiTick = tickNow;
+      this.refreshFl();
+      const sum = this.capture.summary(this.lastFrame?.t ?? 0);
+      $('cap-info').textContent = sum.notes
+        ? `${sum.notes} нот · ${fmtTime(sum.seconds)}${this.s.quantize ? ' · при сохранении выровняется по сетке' : ''}`
+        : 'Всё, что ты поёшь, записывается сюда само';
+      $('cap-dot').classList.toggle('on', this.io.running && this.performer.active !== null);
+    }
     const level = this.io.running ? this.listener.level : 0;
     const db = 20 * Math.log10(Math.max(level, 1e-5));
     $('level-meter').style.width = `${Math.max(0, Math.min(100, ((db + 60) / 60) * 100))}%`;
     const mask = currentMask(this.s);
 
     if (this.tab === 'live') {
-      const p = this.io.running ? this.performer.pitch : NaN;
+      const p = this.smoothDisplayPitch(this.io.running ? this.performer.pitch : NaN);
       const needle = $('cents-needle');
       if (p === p) {
-        const n = Math.round(p);
-        const cents = Math.round((p - n) * 100);
+        const n = this.displayNote;
+        const cents = Math.max(-50, Math.min(50, Math.round((p - n) * 100)));
         $('note-big').textContent = noteNameRu(n);
         $('note-latin').textContent = noteName(n);
         $('note-hz').textContent = `${(this.s.a4 * Math.pow(2, (p - 69) / 12)).toFixed(1)} Гц`;
@@ -1033,7 +1332,7 @@ class App {
           $('note-hz').textContent = '';
         }
       }
-      if (p === p) this.lastVoicedAt = performance.now();
+      if (this.performer.pitch === this.performer.pitch) this.lastVoicedAt = performance.now();
       this.refreshLiveStatus(db);
       const active = this.performer.active;
       $('chord-display').textContent = active ? active.notes.map((m) => noteName(m)).join(' · ') : '';

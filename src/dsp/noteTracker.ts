@@ -39,6 +39,8 @@ export interface TrackerOptions {
   changeSec: number;
   /** RMS jump ratio that re-articulates a note (e.g. replucking the same string). */
   onsetRatio: number;
+  /** Median filter length (frames) applied to the pitch track. */
+  smoothFrames: number;
 }
 
 export const VOICE_OPTIONS: TrackerOptions = {
@@ -48,9 +50,11 @@ export const VOICE_OPTIONS: TrackerOptions = {
   confirmSec: 0.05,
   minNoteSec: 0.08,
   maxGapSec: 0.07,
-  changeSemitones: 0.65,
-  changeSec: 0.06,
-  onsetRatio: 2.6,
+  changeSemitones: 0.7,
+  changeSec: 0.07,
+  // Singers' level wobbles (breath, vowels) by 10+ dB; only a deep dip and rise re-articulates.
+  onsetRatio: 5,
+  smoothFrames: 5,
 };
 
 export const GUITAR_OPTIONS: TrackerOptions = {
@@ -62,10 +66,12 @@ export const GUITAR_OPTIONS: TrackerOptions = {
   changeSemitones: 0.55,
   changeSec: 0.045,
   onsetRatio: 1.8,
+  smoothFrames: 3,
 };
 
 export type TrackerEvent =
-  | { type: 'on'; midi: number; raw: number; t: number; velocity: number }
+  /** `legato`: the previous note ended because the pitch moved, not because of silence or a new attack. */
+  | { type: 'on'; midi: number; raw: number; t: number; velocity: number; legato: boolean }
   /** `discarded`: the note was too short to keep in the transcription (it still has to be released). */
   | { type: 'off'; note: Note; discarded: boolean };
 
@@ -98,6 +104,7 @@ export class NoteTracker {
   private lastVoicedT = -Infinity;
   private recentRms: { t: number; rms: number }[] = [];
   private smooth: number[] = [];
+  private wasVoiced = false;
   readonly notes: Note[] = [];
   /** Fractional MIDI of the latest voiced frame (for display), NaN when silent. */
   currentPitch = NaN;
@@ -112,7 +119,10 @@ export class NoteTracker {
   push(frame: TrackerFrame): TrackerEvent[] {
     const o = this.opts;
     const events: TrackerEvent[] = [];
-    const voiced = frame.freq > 0 && frame.clarity >= o.clarityGate && frame.rms >= o.rmsGate;
+    // Hysteresis: once voiced, a breathy frame with lower clarity does not drop the note.
+    const clarityGate = this.wasVoiced ? o.clarityGate - 0.2 : o.clarityGate;
+    const voiced = frame.freq > 0 && frame.clarity >= clarityGate && frame.rms >= o.rmsGate;
+    this.wasVoiced = voiced;
 
     // Onset detection on the RMS envelope.
     this.recentRms.push({ t: frame.t, rms: frame.rms });
@@ -133,17 +143,18 @@ export class NoteTracker {
       return events;
     }
 
-    // 3-frame median removes single-frame octave glitches.
+    // Median filter removes short octave glitches and jitter.
     const mRaw = freqToMidi(frame.freq, o.a4);
     this.smooth.push(mRaw);
-    if (this.smooth.length > 3) this.smooth.shift();
-    const m = this.smooth.length === 3 ? median(this.smooth) : mRaw;
+    if (this.smooth.length > o.smoothFrames) this.smooth.shift();
+    const m = this.smooth.length >= 3 ? median(this.smooth) : mRaw;
     this.currentPitch = m;
     this.lastVoicedT = frame.t;
     const v: Voiced = { t: frame.t, m, rms: frame.rms };
 
     if (this.active) {
-      const centre = median(this.active.values.map((x) => x.m));
+      // Centre follows the recent part of long notes (singers drift).
+      const centre = median(this.active.values.slice(-80).map((x) => x.m));
       const age = frame.t - this.active.start;
       // The onset window (90 ms) must lie entirely after the note's own attack, otherwise a
       // gradual swell (sung onsets) would look like a re-articulation.
@@ -165,11 +176,14 @@ export class NoteTracker {
         this.deviation.shift();
       }
       const span = this.deviation[this.deviation.length - 1].t - this.deviation[0].t;
-      if (span >= o.changeSec) {
+      // Octave jumps are usually detection errors on a held note: demand a longer hold.
+      const jump = Math.abs(median(this.deviation.map((x) => x.m)) - centre);
+      const octaveLike = Math.abs(jump - 12) < 0.7 || Math.abs(jump - 24) < 0.7;
+      if (span >= (octaveLike ? Math.max(o.changeSec, 0.15) : o.changeSec)) {
         const dev = this.deviation;
         this.deviation = [];
         this.finish(dev[0].t, events);
-        this.begin(dev, events);
+        this.begin(dev, events, false, true);
       }
       return events;
     }
@@ -210,11 +224,11 @@ export class NoteTracker {
     };
   }
 
-  private begin(values: Voiced[], events: TrackerEvent[], articulated = false): void {
+  private begin(values: Voiced[], events: TrackerEvent[], articulated = false, legato = false): void {
     const peak = Math.max(...values.map((x) => x.rms));
     this.active = { start: values[0].t, values: values.slice(), peak, articulated };
     const raw = median(values.map((x) => x.m));
-    events.push({ type: 'on', midi: Math.round(raw), raw, t: values[0].t, velocity: rmsToVelocity(peak) });
+    events.push({ type: 'on', midi: Math.round(raw), raw, t: values[0].t, velocity: rmsToVelocity(peak), legato });
   }
 
   private finish(end: number, events: TrackerEvent[]): void {

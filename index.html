@@ -68,10 +68,26 @@
         </section>
 
         <section class="panel">
-          <h3>MIDI-выход</h3>
+          <h3>FL Studio</h3>
+          <div class="fl-status" id="fl-status"><span class="fl-dot"></span><span id="fl-status-text">Не подключено</span></div>
+          <div class="fl-transport">
+            <button class="btn small" id="fl-rec" title="Включить запись в FL Studio и запустить воспроизведение">● Запись в FL</button>
+            <button class="btn small ghost" id="fl-play" title="Играть / пауза в FL Studio">▶</button>
+            <button class="btn small ghost" id="fl-stop" title="Стоп в FL Studio">■</button>
+          </div>
+          <label class="check"><input type="checkbox" id="fl-tempo" /> Брать темп из FL</label>
+          <label class="check"><input type="checkbox" id="fl-newtake" /> Новый дубль, когда FL начинает запись</label>
+          <button class="btn small" id="fl-setup-btn">Настроить связь с FL Studio</button>
+        </section>
+
+        <section class="panel">
+          <h3>MIDI</h3>
           <button class="btn small" id="midi-connect-btn">Подключить MIDI</button>
-          <label class="field">Порт
+          <label class="field">Выход (ноты в FL / DAW)
             <select id="midi-port"><option value="">— не выбран —</option></select>
+          </label>
+          <label class="field">Вход (ответ от FL)
+            <select id="midi-in-port"><option value="">— не выбран —</option></select>
           </label>
           <div class="row2">
             <label class="field">Канал
@@ -82,7 +98,6 @@
             </label>
           </div>
           <button class="btn small ghost" id="panic-btn">Сбросить все ноты</button>
-          <small class="hint" id="midi-help">Чтобы ноты шли в DAW (FL Studio, Ableton, Reaper…), установи бесплатный <b>loopMIDI</b>, создай в нём порт и выбери его здесь и во входах DAW.</small>
         </section>
       </aside>
 
@@ -108,6 +123,23 @@
           </div>
           <canvas id="keyboard" class="keyboard"></canvas>
 
+          <div class="capture">
+            <div class="capture-info">
+              <span class="capture-dot" id="cap-dot"></span>
+              <div>
+                <div class="capture-title">Дубль</div>
+                <div class="hint" id="cap-info">Всё, что ты поёшь, записывается сюда само</div>
+              </div>
+            </div>
+            <div class="capture-actions">
+              <button class="btn small primary" id="cap-fl" title="Сохранить .mid в браузер FL Studio: Recorded → SoundWave">Сохранить в FL Studio</button>
+              <button class="btn small" id="cap-studio" title="Добавить дорожкой во вкладку «Студия»">В студию</button>
+              <button class="btn small" id="cap-midi">Скачать MIDI</button>
+              <a class="btn small ghost drag-out" id="cap-drag" draggable="true" title="Перетащи в FL Studio, Проводник или другую программу">⇲ Перетащить</a>
+              <button class="btn small ghost" id="cap-clear" title="Очистить и начать новый дубль">Новый дубль</button>
+            </div>
+          </div>
+
           <div class="cards">
             <div class="card">
               <h4>Звук</h4>
@@ -124,6 +156,7 @@
             <div class="card">
               <h4>Ноты и аккорды</h4>
               <label class="check"><input type="checkbox" id="keylock" /> Привязка к тональности</label>
+              <small class="hint warn" id="keylock-hint" hidden>Сейчас разрешены все 12 нот, поэтому дрожащий голос легко задевает соседнюю. Выбери тональность песни слева или нажми «Определить по тому, что я спел».</small>
               <label class="field">Аккорд
                 <select id="chord-select"></select>
               </label>
@@ -259,6 +292,46 @@
         </section>
       </main>
     </div>
+    <dialog class="dialog" id="fl-dialog">
+      <h2>Связь с FL Studio</h2>
+      <p class="hint">Ноты из SoundWave будут идти прямо в FL Studio, а кнопками «Запись / Играть / Стоп» можно управлять FL отсюда.</p>
+      <ol class="steps">
+        <li>
+          <div class="step-head"><b>loopMIDI</b>: виртуальный MIDI-кабель <span class="badge" id="st-loop"></span></div>
+          <p class="hint">В окне loopMIDI должен быть порт «loopMIDI Port» (если списка нет, нажми «+»).</p>
+          <button class="btn small" id="do-loop">Запустить loopMIDI</button>
+        </li>
+        <li>
+          <div class="step-head"><b>Скрипт SoundWave для FL</b> <span class="badge" id="st-script"></span></div>
+          <p class="hint">Добавляет в FL устройство «SoundWave»: управление записью и передача темпа обратно.</p>
+          <button class="btn small" id="do-script">Установить скрипт</button>
+        </li>
+        <li>
+          <div class="step-head"><b>MIDI в SoundWave</b> <span class="badge" id="st-midi"></span></div>
+          <p class="hint">Выход и вход SoundWave подключаются к «loopMIDI Port».</p>
+          <button class="btn small" id="do-midi">Подключить автоматически</button>
+        </li>
+        <li>
+          <div class="step-head"><b>Настройка в FL Studio</b> (один раз) <span class="badge" id="st-fl"></span></div>
+          <p class="hint">В FL открой Options → MIDI settings (F10):</p>
+          <ul class="hint">
+            <li><b>Input</b>: выдели «loopMIDI Port», в Controller type выбери <b>SoundWave</b> (Enable включится сам), колёсиком мыши поставь Port: <b>1</b>.</li>
+            <li><b>Output</b>: выдели «loopMIDI Port», Port: <b>1</b>.</li>
+            <li>Если FL был открыт до установки скрипта, нажми там «Update MIDI scripts» или перезапусти FL.</li>
+            <li>При первой записи FL спросит «What would you like to record?»: поставь галочку «Don't show this in the future» и выбери <b>Notes and automation</b>.</li>
+          </ul>
+          <button class="btn small" id="do-fl">Открыть FL Studio</button>
+        </li>
+        <li>
+          <div class="step-head"><b>Запись</b></div>
+          <p class="hint">В FL выбери канал с инструментом и нажми здесь «● Запись в FL». Ноты пойдут прямо в пианоролл FL. Дубли, сохранённые кнопкой «Сохранить в FL Studio», появятся в браузере FL: Recorded → SoundWave.</p>
+        </li>
+      </ol>
+      <div class="dialog-foot">
+        <button class="btn ghost" id="fl-recheck">Проверить ещё раз</button>
+        <button class="btn primary" id="fl-dialog-close">Готово</button>
+      </div>
+    </dialog>
     <div class="toast" id="toast"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
